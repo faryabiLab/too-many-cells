@@ -84,7 +84,7 @@ import TooManyCells.Paths.Types
 
 -- | Command line arguments
 data Options
-    = MakeTree { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or, if genes-file and cells-file are not specified, or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
+    = MakeTree { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
                , projectionFile :: Maybe String <?> "([Nothing] | FILE) The input file containing positions of each cell for plotting. Format is \"barcode,x,y\" and matches column order in the matrix file. Useful for 10x where a TNSE projection is generated in \"projection.csv\". Cells without projections will not be plotted. If not supplied, no plot will be made."
                , cellWhitelistFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the cells to include. No header, line separated list of barcodes."
                , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
@@ -117,8 +117,9 @@ data Options
                , prior :: Maybe String <?> "([Nothing] | STRING) The input folder containing the output from a previous run. If specified, skips clustering by using the previous clustering files."
                , order :: Maybe Double <?> "([1] | DOUBLE) The order of diversity."
                , clumpinessMethod :: Maybe String <?> "([Majority] | Exclusive | AllExclusive) The method used when calculating clumpiness: Majority labels leaves according to the most abundant label, Exclusive only looks at leaves consisting of cells solely from one label, and AllExclusive treats the leaf as containing both labels."
+               , dense :: Bool <?> "Whether to use dense matrix algorithms for clustering. Should be faster for dense matrices, so if batch correction, PCA, or other algorithms are applied upstream to the input matrix, consider using this option to speed up the tree generation."
                , output :: Maybe String <?> "([out] | STRING) The folder containing output."}
-    | Interactive { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or, if genes-file and cells-file are not specified, or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
+    | Interactive { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
                   , cellWhitelistFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the cells to include. No header, line separated list of barcodes."
                   , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
                   , delimiter :: Maybe Char <?> "([,] | CHAR) The delimiter for the csv file if using a normal csv rather than cellranger output and for --labels-file."
@@ -127,7 +128,7 @@ data Options
                   , noFilter :: Bool <?> "Whether to bypass filtering genes and cells by low counts."
                   , filterThresholds :: Maybe String <?> "([(250, 1)] | (DOUBLE, DOUBLE)) The minimum filter thresholds for (MINCELL, MINFEATURE) when filtering cells and features by low read counts. See also --no-filter."
                   , prior :: Maybe String <?> "([Nothing] | STRING) The input folder containing the output from a previous run. If specified, skips clustering by using the previous clustering files."}
-    | Differential { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or, if genes-file and cells-file are not specified, or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
+    | Differential { matrixPath :: [String] <?> "(PATH) The path to the input directory containing the matrix output of cellranger (matrix.mtx, genes.tsv, and barcodes.tsv) or an input csv file containing gene row names and cell column names. If given as a list (--matrixPath input1 --matrixPath input2 etc.) then will join all matrices together. Assumes the same number and order of genes in each matrix, so only cells are added."
                    , cellWhitelistFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the cells to include. No header, line separated list of barcodes."
                    , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
                    , pca :: Maybe Double <?> "([Nothing] | DOUBLE) The percent variance to retain for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information."
@@ -168,21 +169,23 @@ modifiers = lispCaseModifiers { shortNameModifier = short }
     short "drawColors"           = Just 'R'
     short "drawDendrogram"       = Just 'D'
     short "drawLeaf"             = Just 'L'
+    short "drawLegendAllLabels"  = Just 'J'
+    short "drawLegendSep"        = Just 'Q'
     short "drawMark"             = Just 'K'
-    short "drawMaxNodeSize"      = Just 'A'
     short "drawMaxLeafNodeSize"  = Nothing
+    short "drawMaxNodeSize"      = Just 'A'
     short "drawNoScaleNodes"     = Just 'W'
     short "drawNodeNumber"       = Just 'N'
-    short "drawLegendSep"        = Just 'Q'
-    short "drawLegendAllLabels"  = Just 'J'
     short "drawPalette"          = Just 'Y'
     short "drawScaleSaturation"  = Just 'V'
     short "eigenGroup"           = Just 'B'
     short "filterThresholds"     = Just 'H'
     short "labels"               = Nothing
+    short "matrixOutput"         = Nothing
     short "maxDistance"          = Just 'T'
     short "maxProportion"        = Just 'X'
     short "maxStep"              = Just 'S'
+    short "minDistance"          = Nothing
     short "minSize"              = Just 'M'
     short "noFilter"             = Just 'F'
     short "normalization"        = Just 'z'
@@ -316,6 +319,7 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
               . unHelpful
               . eigenGroup
               $ opts
+        dense'            = DenseFlag . unHelpful . dense $ opts
         normalization'    = getNormalization opts
         numEigen'         = fmap NumEigen . unHelpful . numEigen $ opts
         minSize'          = fmap MinClusterSize . unHelpful . minSize $ opts
@@ -445,9 +449,10 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
     -- Load previous results or calculate results if first run.
     originalClusterResults <- case prior' of
         Nothing -> do
-            let (fullCr, _) = hSpecClust eigenGroup' normalization' numEigen'
-                            . extractSc
-                            $ processedSc
+            let (fullCr, _) =
+                  hSpecClust dense' eigenGroup' normalization' numEigen'
+                    . extractSc
+                    $ processedSc
 
             return fullCr :: IO ClusterResults
         (Just x) -> do
