@@ -44,7 +44,8 @@ R installation) or difficulty installing. *macOS and Windows users:*
 =too-many-cells= was built and tested on linux, so we highly recommend using the
 [[Docker][docker]] image (which a completely isolated environment which requires no
 compiling or installation, other than docker itself) as there may be
-difficulties in installing the dependencies.
+difficulties in installing the dependencies. There are, however, additional
+instructions for macOS [[macOS][here]] if you really want to compile it.
 
 ** Dependencies
 
@@ -158,6 +159,30 @@ cd too-many-cells
 docker build -t too-many-cells -f ./Dockerfile .
 #+END_SRC
 
+** macOS
+<<macOS>>
+
+We recommend using [[Docker][docker]] on macOS. If you need to build =too-many-cells=, you
+should get the above dependencies. For some dependencies, you can use [[https://brew.sh/][brewer]],
+then install =too-many-cells= (in the cloned folder, don't forget to install the
+R dependencies above):
+
+#+BEGIN_SRC shell
+brew cask install xquartz
+brew install glib cairo gtk gettext fontconfig freetype
+
+brew tap brewsci/bio
+brew tap brewsci/science
+brew install r zeromq graphviz pkg-config gsl libffi gobject-introspection gtk+ gtk+3
+
+# Needed so pkg-config and libraries can be found.
+# For the second path, use the ouput of "brew info libffi".
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/opt/libffi/lib/pkgconfig
+
+# Tell gtk that it's quartz
+stack install --flag gtk:have-quartz-gtk
+#+END_SRC
+
 * Troubleshooting
 
 ** I am getting errors like =AesonException "Error in $.packages.cassava.constraints.flags...= when running =stack= commands
@@ -214,6 +239,8 @@ At any point, use =-h= to see the help of each entry point.
 Also, check out [[https://github.com/GregorySchwartz/tooManyCellsR][tooManyCellsR]] for an R wrapper!
 
 ** =make-tree=
+
+<<makeTreeUsage>>
 
 =too-many-cells make-tree= generates a binary tree using hierarchical spectral
 clustering. We start with all cells in a single node. Spectral clustering
@@ -761,7 +788,7 @@ too-many-cells paths\
     -o out_paths
 #+END_SRC
 
-* Documentation
+* Advanced documentation
 
 Each entry point has its own documentation accessible with =-h=, such as
 =too-many-cells make-tree -h=:
@@ -788,3 +815,8 @@ Available commands:
   diversity
   paths
 #+end_example
+
+* Demo
+
+Check out an instructional example of using =too-many-cells= [[file:workshop/workshop.html][here]] when finished
+looking at the brief [[makeTreeUsage][feature overview]].
