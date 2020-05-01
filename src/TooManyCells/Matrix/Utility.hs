@@ -4,6 +4,7 @@ Gregory W. Schwartz
 Collects helper functions in the program.
 -}
 
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -21,6 +22,7 @@ module TooManyCells.Matrix.Utility
     , writeMatrixLike
     , isCsvFile
     , getMatrixOutputType
+    , matrixValidity
     ) where
 
 -- Remote
@@ -162,15 +164,20 @@ extractSc :: Maybe SingleCells -> SingleCells
 extractSc = fromMaybe (error "Need to provide matrix in --matrix-path for this functionality.")
 
 -- | Write a matrix to a file.
-writeSparseMatrixLike :: MatrixLike (a) => MatrixFileFolder -> a -> IO ()
-writeSparseMatrixLike (MatrixFolder folder) mat = do
+writeSparseMatrixLike :: MatrixLike a => MatrixTranspose -> MatrixFileFolder -> a -> IO ()
+writeSparseMatrixLike (MatrixTranspose mt) (MatrixFolder folder) mat = do
   -- Where to place output files.
   FP.createDirectoryIfMissing True folder
 
-  writeMatrix (folder </> "matrix.mtx") . spMatToMat . getMatrix $ mat
+  writeMatrix (folder </> "matrix.mtx")
+    . spMatToMat
+    . (bool S.transposeSM id mt) -- To have cells as columns
+    . getMatrix
+    $ mat
   T.writeFile (folder </> "genes.tsv")
     . T.unlines
-    .  V.toList
+    . fmap (\x -> T.intercalate "\t" [x, x])
+    . V.toList
     . getColNames
     $ mat
   T.writeFile (folder </> "barcodes.tsv")
@@ -183,16 +190,18 @@ writeSparseMatrixLike (MatrixFolder folder) mat = do
 
 -- | Print a dense matrix to a streaming string.
 printDenseMatrixLike :: (MatrixLike a, Monad m)
-                     => a
+                     => MatrixTranspose
+                     -> a
                      -> BS.ByteString m ()
-printDenseMatrixLike mat = Stream.encode (Just $ Stream.header header)
-                         . Stream.zipWith (:) rowN
-                         . Stream.each
-                         . fmap (fmap showt . S.toDenseListSV)
-                         . S.toRowsL
-                         . S.transposeSM -- To have cells as columns
-                         . getMatrix
-                         $ mat
+printDenseMatrixLike (MatrixTranspose mt) mat =
+  Stream.encode (Just $ Stream.header header)
+    . Stream.zipWith (:) rowN
+    . Stream.each
+    . fmap (fmap showt . S.toDenseListSV)
+    . S.toRowsL
+    . (bool S.transposeSM id mt) -- To have cells as columns
+    . getMatrix
+    $ mat
   where
     header = (B.empty :)
            . fmap T.encodeUtf8
@@ -202,14 +211,22 @@ printDenseMatrixLike mat = Stream.encode (Just $ Stream.header header)
     rowN = Stream.each . V.toList . getColNames $ mat -- To have columns as rows
 
 -- | Write a matrix to a dense file.
-writeDenseMatrixLike :: (MatrixLike a) => MatrixFileFolder -> a -> IO ()
-writeDenseMatrixLike (MatrixFile file) =
-  runManaged . SW.writeBinaryFile file . printDenseMatrixLike
+writeDenseMatrixLike :: (MatrixLike a)
+                     => MatrixTranspose
+                     -> MatrixFileFolder
+                     -> a
+                     -> IO ()
+writeDenseMatrixLike mt (MatrixFile file) =
+  runManaged . SW.writeBinaryFile file . printDenseMatrixLike mt
 
 -- | Write a MatrixLike to a file (dense) or folder (sparse).
-writeMatrixLike :: (MatrixLike a) => MatrixFileFolder -> a -> IO ()
-writeMatrixLike o@(MatrixFolder _) = writeSparseMatrixLike o
-writeMatrixLike o@(MatrixFile _) = writeDenseMatrixLike o
+writeMatrixLike :: (MatrixLike a)
+                => MatrixTranspose
+                -> MatrixFileFolder
+                -> a
+                -> IO ()
+writeMatrixLike mt o@(MatrixFolder _) = writeSparseMatrixLike mt o
+writeMatrixLike mt o@(MatrixFile _) = writeDenseMatrixLike mt o
 
 -- | Check if a name ends with .csv
 isCsvFile :: FilePath -> Bool
@@ -218,3 +235,22 @@ isCsvFile = (== ".CSV") . fmap toUpper . reverse . take 4 . reverse
 -- | Get matrix output format from input name.
 getMatrixOutputType :: FilePath -> MatrixFileFolder
 getMatrixOutputType x = bool (MatrixFolder x) (MatrixFile x) . isCsvFile $ x
+
+-- | Check validity of matrix.
+matrixValidity :: (MatrixLike a) => a -> Maybe String
+matrixValidity mat
+  | rows /= numCells || cols /= numFeatures =
+      Just $ "Warning: mismatch in number of (features, cells) ("
+                           <> show numFeatures
+                           <> ","
+                           <> show numCells
+                           <> ") with matrix (rows, columns) ("
+                           <> show cols
+                           <> ","
+                           <> show rows
+                           <> "), will probably result in error."
+  | otherwise = Nothing
+  where
+    (rows, cols) = S.dimSM . getMatrix $ mat
+    numCells = V.length . getRowNames $ mat
+    numFeatures = V.length . getColNames $ mat

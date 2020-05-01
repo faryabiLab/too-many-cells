@@ -40,15 +40,15 @@ packages:
 # - location:
 #     git: https://github.com/GregorySchwartz/hierarchical-clustering-diagrams.git
 #     commit: ba162fc797aef930d7a9d886c20668352b413359
-  
+
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
 extra-deps:
-  - differential-0.1.1.0
-  - hierarchical-spectral-clustering-0.3.0.0
-  - modularity-0.2.1.0
-  - spectral-clustering-0.3.0.2
-  - birch-beer-0.1.1.1
+  - differential-0.1.2.0
+  - hierarchical-spectral-clustering-0.5.0.1
+  - modularity-0.2.1.1
+  - spectral-clustering-0.3.1.1
+  - birch-beer-0.2.2.0
   - SVGFonts-1.6.0.3
   - aeson-1.4.0.0
   - attoparsec-0.13.1.0
@@ -66,12 +66,13 @@ extra-deps:
   - discrimination-0.3
   - diversity-0.8.1.0
   - dual-tree-0.2.1.1
-  - eigen-3.3.4.1
+  # - eigen-3.3.4.1
   - fast-math-1.0.2
   - fasta-0.10.4.2
-  - gio-0.13.4.1
+  - gio-0.13.8.0
+  - glib-0.13.8.0
   - graphviz-2999.20.0.2
-  - gtk-0.14.7
+  - gtk-0.15.4
   - hmatrix-svdlibc-0.5.0.1
   - inline-c-0.6.1.0
   - inline-r-0.9.2
@@ -79,8 +80,9 @@ extra-deps:
   - mfsolve-0.3.2.0
   - mmorph-1.0.9
   - palette-0.3.0.1
+  - pango-0.13.8.0
   - pipes-text-0.0.2.5
-  - plots-0.1.0.2
+  - plots-0.1.1.0
   - streaming-cassava-0.1.0.1
   - streaming-utils-0.1.4.7
   - streaming-with-0.2.2.1

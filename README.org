@@ -8,7 +8,7 @@
 
 See [[https://github.com/GregorySchwartz/too-many-cells]] for latest version.
 
-See [[https://www.biorxiv.org/content/10.1101/519660v1][the bioRxiv paper]] for more information about the algorithm.
+See [[https://doi.org/10.1038/s41592-020-0748-5][the publication]] (and please cite!) for more information about the algorithm.
 
 [[file:img/pruned_tree.png]]
 
@@ -19,7 +19,7 @@ the relationships between cell clades. This includes new ways of clustering,
 plotting, choosing differential expression comparisons, and more! While
 =too-many-cells= was intended for single cell RNA-seq, any abundance data in any
 domain can be used. Rather than opt for a unique positioning of each cell using
-dimensionality reduction approaches like t-SNE and PCA, =too-many-cells=
+dimensionality reduction approaches like t-SNE, UMAP, and PCA, =too-many-cells=
 recursively divides cells into clusters and relates clusters rather than
 individual cells. In fact, by recursively dividing until further dividing would
 be considered noise or random partitioning, we can eliminate noisy relationships
@@ -30,24 +30,48 @@ without additional parameters or runs. See below for a full list of features.
 
 * New features for current version
 
+- Now packaged for the functional package manager =nix=! No more dependency
+  shuffling or root for Docker needed!
 - A new R wrapper was written to quickly get data to and from =too-many-cells=
   from R. [[https://github.com/GregorySchwartz/tooManyCellsR][Check it out here]]!
 - Now works with Cellranger 3.0 matrices in addition to Cellranger 2.0
 - Can prune (make into leaves) specified nodes with =--custom-cut=.
+- Can analyze sets of features averaged together (e.g. gene sets). *Breaks API*,
+  so update your =--draw-leaf "DrawItem (DrawContinuous \"Cd4\")"= argument to
+  =--draw-leaf "DrawItem (DrawContinuous [\"Cd4\"])"= (notice the list
+  notation).
+- Outputs values from differential entry point plots (from =--genes=), and can
+  aggregate genes by average.
 
 * Installation
 
 We provide multiple ways to install =too-many-cells=. We recommend installing
-=stack= ([[Install =stack= ][see below]]), but we also have [[Docker][docker]] images and a =Dockerfile= to
-use in any system in case you have a custom build (for instance, a non-standard
-R installation) or difficulty installing. *macOS and Windows users:*
-=too-many-cells= was built and tested on linux, so we highly recommend using the
-[[Docker][docker]] image (which a completely isolated environment which requires no
+with [[nix][ =nix= ]] or [[Stack][ =stack= ]]. =nix= will provide all dependencies in the build,
+supports linux and macOS, and should be reproducible, so try that first. We also
+have [[Docker][docker]] images and a =Dockerfile= to use in any system in case you have a
+custom build (for instance, a non-standard R installation) or difficulty
+installing. *macOS and Windows users:* =too-many-cells= was built and tested on
+linux, so we highly recommend using the =nix= (macOS) or [[Docker][docker]] (macOS or
+Windows) image (which a completely isolated environment which requires no
 compiling or installation, other than docker itself) as there may be
 difficulties in installing the dependencies. There are, however, additional
 instructions for macOS [[macOS][here]] if you really want to compile it.
 
-** Dependencies
+** nix
+
+=too-many-cells= can be installed using the functional package manager [[https://nixos.org/nix/][ =nix= ]].
+While you will need =sudo= to install, no =sudo= is required after the correct
+setup. First, install =nix= following the instructions
+[[https://nixos.org/nix/][on the website]]. Then, with an unset =LD_LIBRARY_PATH=,
+
+#+BEGIN_SRC sh
+git clone https://github.com/GregorySchwartz/too-many-cells.git
+cd too-many-cells
+nix-env -f default.nix -i too-many-cells
+#+END_SRC
+
+** Stack
+*** Dependencies
 
 You may require the following dependencies to build and run (from Ubuntu 14.04,
 use the appropriate packages from your distribution of choice):
@@ -85,7 +109,7 @@ install.packages("BiocManager")
 BiocManager::install("edgeR")
 #+END_SRC
 
-** Install =stack=
+*** Install =stack=
 
 See [[https://docs.haskellstack.org/en/stable/README/]] for more details.
 
@@ -94,9 +118,9 @@ curl -sSL https://get.haskellstack.org/ | sh
 stack setup
 #+END_SRC
 
-** Install =too-many-cells=
+*** Install =too-many-cells=
 
-*** Source
+**** Source
 
 Probably the easiest method if you don't want to mess with dependencies (outside
 of the ones above).
@@ -107,7 +131,7 @@ cd too-many-cells
 stack install
 #+END_SRC
 
-*** Online
+**** Online
 
 We only require =stack= (or =cabal=), you do not need to download any source
 code (but you might need the stack.yaml dependency versions), just run the
@@ -124,48 +148,13 @@ file. For a quick =yaml= configuration, refer to
 [[https://github.com/GregorySchwartz/too-many-cells/blob/master/stack.yaml]]. Relies
 on =eigen-3.3.4.1= right now.
 
-*** Docker
-
-Different computers have different setups, operating systems, and repositories.
-Do put the entire program in a container to bypass difficulties (with the other
-methods above), we user =docker=. So first, [[https://docs.docker.com/][install docker]].
-
-To get =too-many-cells= (replace 0.1.5.0 with [[https://cloud.docker.com/repository/docker/gregoryschwartz/too-many-cells/general][any version needed]]):
-
-#+BEGIN_SRC sh
-docker pull gregoryschwartz/too-many-cells:0.1.5.0
-#+END_SRC
-
-To run =too-many-cells= in a docker container:
-
-#+BEGIN_SRC sh
-sudo docker run gregoryschwartz/too-many-cells:0.1.5.0 -h
-#+END_SRC
-
-Docker won't be able to find your files by default. You need to mount the
-folders with =-v= in order to have docker read and write from and to the
-filesystem, respectively. Read the [[https://docs.docker.com/storage/volumes/][documentation]] about volumes for more
-information. Essentially, =-v /path/to/matrix/on/host:/input_matrix= with =-m
-/input_matrix= is what you want, where before the =:= is on the host filesystem
-while after the =:= is what the docker program sees. Then you can write the
-output in the same way: =-v /path/to/output/on/host:/output= will write the
-output to the folder before the =:=.
-
-To build the =too-many-cells= image yourself if you want:
-
-#+BEGIN_SRC sh
-git clone https://github.com/GregorySchwartz/too-many-cells.git
-cd too-many-cells
-docker build -t too-many-cells -f ./Dockerfile .
-#+END_SRC
-
-** macOS
+**** macOS
 <<macOS>>
 
-We recommend using [[Docker][docker]] on macOS. If you need to build =too-many-cells=, you
-should get the above dependencies. For some dependencies, you can use [[https://brew.sh/][brewer]],
-then install =too-many-cells= (in the cloned folder, don't forget to install the
-R dependencies above):
+We recommend using =nix= or [[Docker][docker]] on macOS. If you need to build
+=too-many-cells=, you should get the above dependencies. For some dependencies,
+you can use [[https://brew.sh/][brewer]], then install =too-many-cells= (in the cloned folder, don't
+forget to install the R dependencies above):
 
 #+BEGIN_SRC shell
 brew cask install xquartz
@@ -183,7 +172,64 @@ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/opt/libffi/lib/pkgcon
 stack install --flag gtk:have-quartz-gtk
 #+END_SRC
 
+** Docker
+
+Different computers have different setups, operating systems, and repositories.
+Do put the entire program in a container to bypass difficulties (with the other
+methods above), we user =docker=. So first, [[https://docs.docker.com/][install docker]].
+
+To get =too-many-cells= (replace 0.2.2.0 with [[https://cloud.docker.com/repository/docker/gregoryschwartz/too-many-cells/general][any version needed]]):
+
+#+BEGIN_SRC sh
+docker pull gregoryschwartz/too-many-cells:0.2.2.0
+#+END_SRC
+
+To run =too-many-cells= in a docker container:
+
+#+BEGIN_SRC sh
+sudo docker run -it --rm -v "/home/username:/home/username" gregoryschwartz/too-many-cells:0.2.2.0 -h
+#+END_SRC
+
+Now you can follow the tutorial below with the addition of the docker paths and
+commands. If you add yourself to the docker group, =sudo= is not needed. For instance:
+
+#+BEGIN_SRC sh
+docker run -it --rm -v "/home/username:/home/username" \
+    gregoryschwartz/too-many-cells:0.2.2.0 make-tree \
+    --matrix-path input \
+    --labels-file labels.csv \
+    --draw-collection "PieRing" \
+    --output out \
+    > clusters.csv
+#+END_SRC
+
+Make sure to [[https://docs.docker.com/config/containers/resource_constraints/][increase the memory]] that can be used by docker containers if you
+use macOS or Windows. Also, docker won't be able to find your files by default.
+You need to mount the folders with =-v= in order to have docker read and write
+from and to the filesystem, respectively. Read the [[https://docs.docker.com/storage/volumes/][documentation]] about volumes
+for more information. You can simply mount your entire relevant path as in the
+above example to handle both input and output, or just mount your entire user
+directory as above. Specifically, =-v "/home/username:/home/username"= for the
+whole directory or each individual =-v /path/to/matrix/on/host:/input_matrix=
+with =-m /input_matrix= is what you want, where before the =:= is on the host
+filesystem while after the =:= is what the docker program sees. Then you can
+write the output in the same way: =-v /path/to/output/on/host:/output= will
+write the output to the folder before the =:=.
+
+To build the =too-many-cells= image yourself if you want:
+
+#+BEGIN_SRC sh
+git clone https://github.com/GregorySchwartz/too-many-cells.git
+cd too-many-cells
+docker build -t too-many-cells -f ./Dockerfile .
+#+END_SRC
+
 * Troubleshooting
+
+** Using nix, I'm getting shared object not found errors.
+
+Be sure to have =LD_LIBRARY_PATH= unset when running =nix-env= to make sure the
+linked libraries are in =/nix/store=.
 
 ** I am getting errors like =AesonException "Error in $.packages.cassava.constraints.flags...= when running =stack= commands
 
@@ -200,10 +246,21 @@ system =R=. Then to every =stack= and =too-many-cells= command, prepend
 - ~PATH="$HOME/.local/bin:/usr/bin:$PATH" stack install~
 - ~PATH="$HOME/.local/bin:/usr/bin:$PATH" too-many-cells make-tree -h~
 
+If your shared libraries are abnormal and use =libR.so= from non-system
+locations, be sure to also have =LD_LIBRARY_PATH=/usr/lib/:$LD_LIBRARY_PATH=
+when installing (and / or the location of R libraries, such as
+=/usr/local/lib/R/lib/=).
+
 ** I am still having issues with installation
 
 [[https://github.com/GregorySchwartz/too-many-cells/issues][Open an issue]]! While working on the issue, try out the docker for
 =too-many-cells=, it requires no installation at all (other than docker).
+
+** I am on macOS/Windows with docker and =too-many-cells= silently crashes.
+
+Docker containers may run into this issue if the memory given to the containers
+is insufficient. Make sure to [[https://docs.docker.com/config/containers/resource_constraints/][increase the memory]] that can be used by docker
+containers.
 
 * Included projects
 
@@ -326,8 +383,15 @@ instead. *You don't need to use scRNA-seq data!* You can use any data that has
 observations (cells) and features (genes), as long as you agree that the
 observations are related by their feature abundances. <<preprocessedData>> If
 you do upstream batch effect correction, PCA, normalization, or anything else,
-be sure to use =--no-filter --normalization NoneNorm= to avoid wrong filters and
-scalings! As for formats, the matrix market format contains three files like so:
+be sure to use =--no-filter --normalization NoneNorm= (and =--shift-positive=
+for PCA) to avoid wrong filters and scalings! *If using dimensionality reduction
+such as PCA and t-SNE*, we highly recommend generating your own similarity
+matrix for use with our =cluster-tree= program and plot with =birch-beer=, as we
+emphasize a feature matrix in =too-many-cells= and dimensionality reduction
+algorithms transform counts (our input which works with cosine similarity) into
+more nebulous information (which may not work with cosine similarity).
+=cluster-tree=, however, can be used with adjacency and similarity matrices. As
+for formats, the matrix market format contains three files like so:
 
 The =matrix.mtx= file is in matrix market format.
 
@@ -457,10 +521,10 @@ leaf to 100 in this case. Alternatively, we can specify =--smart-cutoff 4= in
 addition to =--min-size 1= to set the minimum size of a node to \(4 *
 \text{median absolute deviation (MAD)}\) of the nodes in the original tree.
 Varying the number of MADs varies the number of leaves in the tree.
-=--smart-cutoff= should be used in addition to =--min-size=, =max-proportion=,
-or =min-distance= to decide which cutoff variable to use. The value supplied to
-the cutoff variable is ignored when =--smart-cutoff= is specified. We'll prune
-the tree for better visibility in this document.
+=--smart-cutoff= should be used in addition to =--min-size=, =--max-proportion=,
+=--min-distance=, or =--min-distance-search= to decide which cutoff variable to
+use. The value supplied to the cutoff variable is ignored when =--smart-cutoff=
+is specified. We'll prune the tree for better visibility in this document.
 
 *Note: the pruning arguments change the tree file, not just the plot, so be sure
 to output into a different directory.*
@@ -593,19 +657,21 @@ too-many-cells make-tree \
     --smart-cutoff 4 \
     --min-size 1 \
     --feature-column 2 \
-    --draw-leaf "DrawItem (DrawContinuous \"Cd4\")" \
+    --draw-leaf "DrawItem (DrawContinuous [\"Cd4\"])" \
     --output out_gene_expression \
     > clusters_pruned.csv
 #+END_SRC
 
 [[file:img/cd4_dendrogram.png]]
 
-While this representation shows the expression of /Cd4/ in each cell and blends
-those levels together, due to the sparsity of single cell data these cells and
-their respective subtrees may be hard to see without additional processing.
-Let's scale the saturation to more clearly see sections of the tree with our
-desired expression (when choosing other high and low colors with
-=--draw-colors=, scaling the saturation will only affect non-grayscale colors).
+Notice that /Cd4/ is within a list ([]), so multiple features can be listed and
+the average of those values for each cell will be used. While this
+representation shows the expression of /Cd4/ in each cell and blends those
+levels together, due to the sparsity of single cell data these cells and their
+respective subtrees may be hard to see without additional processing. Let's
+scale the saturation to more clearly see sections of the tree with our desired
+expression (when choosing other high and low colors with =--draw-colors=,
+scaling the saturation will only affect non-grayscale colors).
 
 #+BEGIN_SRC sh
 too-many-cells make-tree \
@@ -615,7 +681,7 @@ too-many-cells make-tree \
     --smart-cutoff 4 \
     --min-size 1 \
     --feature-column 2 \
-    --draw-leaf "DrawItem (DrawContinuous \"Cd4\")" \
+    --draw-leaf "DrawItem (DrawContinuous [\"Cd4\"])" \
     --draw-scale-saturation 10
     --output out_gene_expression \
     > clusters_pruned.csv

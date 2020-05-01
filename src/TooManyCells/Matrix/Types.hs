@@ -51,14 +51,20 @@ newtype FeatureColumn   = FeatureColumn { unFeatureColumn :: Int }
 newtype CellWhitelist = CellWhitelist
     { unCellWhitelist :: Set.Set Cell
     } deriving (Eq,Ord,Read,Show)
-newtype PCAVar = PCAVar
-    { unPCAVar :: Double
+newtype PCADim = PCADim
+    { unPCADim :: Int
     } deriving (Eq,Ord,Read,Show)
 newtype NoFilterFlag = NoFilterFlag
     { unNoFilterFlag :: Bool
     } deriving (Read,Show)
+newtype ShiftPositiveFlag = ShiftPositiveFlag
+    { unShiftPositiveFlag :: Bool
+    } deriving (Read,Show)
 newtype FilterThresholds = FilterThresholds
     { unFilterThresholds :: (Double, Double)
+    } deriving (Read,Show)
+newtype MatrixTranspose = MatrixTranspose
+    { unMatrixTranspose :: Bool
     } deriving (Read,Show)
 newtype X = X
     { unX :: Double
@@ -96,7 +102,8 @@ data CellInfo = CellInfo
     } deriving (Eq,Ord,Read,Show,Generic,A.ToJSON,A.FromJSON)
 L.makeLenses ''CellInfo
 
-data NormType = TfIdfNorm | UQNorm | MedNorm | TotalMedNorm | BothNorm | NoneNorm deriving (Read, Show)
+data NormType = TfIdfNorm | UQNorm | MedNorm | TotalMedNorm | BothNorm | LogCPMNorm | NoneNorm
+                deriving (Read, Show, Eq)
 
 instance (Generic a) => Generic (Vector a)
 

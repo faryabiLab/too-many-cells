@@ -16,6 +16,7 @@ Clusters single cell data.
 module Main where
 
 -- Remote
+import Control.Concurrent
 import BirchBeer.ColorMap
 import BirchBeer.Interactive
 import BirchBeer.Load
@@ -36,9 +37,10 @@ import Language.R as R
 import Language.R.QQ (r)
 import Math.Clustering.Hierarchical.Spectral.Types (getClusterItemsDend, EigenGroup (..))
 import Math.Clustering.Spectral.Sparse (b1ToB2, B1 (..), B2 (..))
+import Math.Modularity.Types (Q (..))
 import Options.Generic
 import System.IO (hPutStrLn, stderr)
-import Text.Read (readMaybe)
+import Text.Read (readMaybe, readEither)
 import TextShow (showt)
 import qualified "find-clumpiness" Types as Clump
 import qualified Control.Lens as L
@@ -90,20 +92,25 @@ data Options
                , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
                , delimiter :: Maybe Char <?> "([,] | CHAR) The delimiter for the csv file if using a normal csv rather than cellranger output and for --labels-file."
                , featureColumn :: Maybe Int <?> "([1] | COLUMN) The column (1-indexed) in the features.tsv.gz file to use for feature names. If using matrix market format, cellranger stores multiple columns in the features file, usually the first column for the Ensembl identifier and the second column for the gene symbol. If the Ensembl identifier is not quickly accessible, use --feature-column 2 for the second column, which is usually more ubiquitous. Useful for overlaying gene expression so you can say --draw-leaf \"DrawItem (DrawContinuous \\\"CD4\\\")\") instead of --draw-leaf \"DrawItem (DrawContinuous \\\"ENSG00000010610\\\")\"). Does not affect CSV format (the column names will be the feature names)."
-               , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
+               , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | LogCPMNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). LogCPMNorm normalizes by log2(CPM + 1). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
                , eigenGroup :: Maybe String <?> "([SignGroup] | KMeansGroup) Whether to group the eigenvector using the sign or kmeans while clustering. While the default is sign, kmeans may be more accurate (but starting points are arbitrary)."
                , numEigen :: Maybe Int <?> "([1] | INT) Number of eigenvectors to use while clustering with kmeans. Takes from the second to last eigenvector. Recommended to start at 1 and work up from there if needed. May help offset the possible instability and inaccuracy of SVDLIBC."
+               , numRuns :: Maybe Int <?> "([Nothing] | INT) Number of runs for permutation test at each split for modularity. Defaults to no test."
                , minSize :: Maybe Int <?> "([1] | INT) The minimum size of a cluster. Defaults to 1."
                , maxStep :: Maybe Int <?> "([Nothing] | INT) Only keep clusters that are INT steps from the root. Defaults to all steps."
                , maxProportion :: Maybe Double <?> "([Nothing] | DOUBLE) Stopping criteria to stop at the node immediate after a node with DOUBLE proportion split. So a node N with L and R children will stop with this criteria at 0.5 if |L| / |R| < 0.5 or > 2 (absolute log2 transformed), that is, if one child has over twice as many items as the other child. Includes L and R in the final result."
+               , minModularity :: Maybe Double <?> "([Nothing] | DOUBLE) Nearly the same as --min-distance, but for clustering instead of drawing (so the output json tree can be larger). Stopping criteria to stop at the node with DOUBLE modularity. So a node N with L and R children will stop with this criteria the distance at N to L and R is < DOUBLE. Does not include L and R in the final result."
                , minDistance :: Maybe Double <?> "([Nothing] | DOUBLE) Stopping criteria to stop at the node immediate after a node with DOUBLE distance. So a node N with L and R children will stop with this criteria the distance at N to L and R is < DOUBLE. Includes L and R in the final result."
-               , smartCutoff :: Maybe Double <?> "([Nothing] | DOUBLE) Whether to set the cutoffs for --min-size, --max-proportion, and --min-distance based off of the distributions (median + (DOUBLE * MAD)) of all nodes. To use smart cutoffs, use this argument and then set one of the three arguments to an arbitrary number, whichever cutoff type you want to use. --min-size distribution is log2 transformed."
+               , minDistanceSearch :: Maybe Double <?> "([Nothing] | DOUBLE) Similar to --min-distance, but searches from the leaves to the root -- if a path from a subtree contains a distance of at least DOUBLE, keep that path, otherwise prune it. This argument assists in finding distant nodes."
+               , smartCutoff :: Maybe Double <?> "([Nothing] | DOUBLE) Whether to set the cutoffs for --min-size, --max-proportion, --min-distance, and --min-distance-search based off of the distributions (median + (DOUBLE * MAD)) of all nodes. To use smart cutoffs, use this argument and then set one of the four arguments to an arbitrary number, whichever cutoff type you want to use. --min-proportion distribution is log2 transformed."
                , customCut :: [Int] <?> "([Nothing] | NODE) List of nodes to prune (make these nodes leaves). Invoked by --custom-cut 34 --custom-cut 65 etc."
+               , rootCut :: Maybe Int <?> "([Nothing] | NODE) Assign a new root to the tree, removing all nodes outside of the subtree."
                , dendrogramOutput :: Maybe String <?> "([dendrogram.svg] | FILE) The filename for the dendrogram. Supported formats are PNG, PS, PDF, and SVG."
-               , matrixOutput :: Maybe String <?> "([Nothing] | FOLDER | FILE.csv) Output the filtered and normalized (not including TfIdfNorm) matrix in this folder in matrix market format or, if a csv file is specified, a dense csv format."
-               , drawLeaf :: Maybe String <?> "([DrawText] | DrawItem DrawItemType) How to draw leaves in the dendrogram. DrawText is the number of items in that leaf. DrawItem is the collection of items represented by circles, consisting of: DrawItem DrawLabel, where each item is colored by its label, DrawItem (DrawContinuous FEATURE), where each item is colored by the expression of FEATURE (corresponding to a feature name in the input matrix), DrawItem (DrawThresholdContinuous [(FEATURE, DOUBLE)]), where each item is colored by the binary high / low expression of FEATURE with cutoff DOUBLE (so a value 0 means low <= 0, high > 0) and multiple FEATUREs can be used to combinatorically label items (FEATURE1 high / FEATURE2 low, etc.), DrawItem DrawSumContinuous, where each item is colored by the sum of the post-normalized columns (use --normalization NoneNorm for UMI counts, default), and DrawItem DrawDiversity, where each node is colored by the diversity based on the labels of each item and the color is normalized separately for the leaves and the inner nodes. The default is DrawText, unless --labels-file is provided, in which DrawItem DrawLabel is the default. If the label or feature cannot be found, the default color will be black (check your spelling!)."
+               , matrixOutput :: Maybe String <?> "([Nothing] | FOLDER | FILE.csv) Output the filtered and normalized (not including TfIdfNorm) matrix in this folder under the --output directory in matrix market format or, if a csv file is specified, a dense csv format. Like input, features are rows. See --matrix-output-transpose."
+               , matrixOutputTranspose :: Maybe String <?> "([Nothing] | FOLDER | FILE.csv) Output the filtered and normalized (not including TfIdfNorm) matrix in this folder under the --output directory in matrix market format or, if a csv file is specified, a dense csv format. Differs from --matrix-output in that features are columns.columns."
+               , drawLeaf :: Maybe String <?> "([DrawText] | DrawItem DrawItemType) How to draw leaves in the dendrogram. DrawText is the number of items in that leaf. DrawItem is the collection of items represented by circles, consisting of: DrawItem DrawLabel, where each item is colored by its label, DrawItem (DrawContinuous [FEATURE]), where each item is colored by the expression of FEATURE (corresponding to a feature name in the input matrix, [FEATURE] is a list, so if more than one FEATURE is listed, uses the average of the feature values), DrawItem (DrawThresholdContinuous [(FEATURE, DOUBLE)]), where each item is colored by the binary high / low expression of FEATURE based on DOUBLE and multiple FEATUREs can be used to combinatorically label items (FEATURE1 high / FEATURE2 low, etc.), DrawItem DrawSumContinuous, where each item is colored by the sum of the post-normalized columns (use --normalization NoneNorm for UMI counts, default), and DrawItem DrawDiversity, where each node is colored by the diversity based on the labels of each item and the color is normalized separately for the leaves and the inner nodes. The default is DrawText, unless --labels-file is provided, in which DrawItem DrawLabel is the default. If the label or feature cannot be found, the default color will be black (check your spelling!)."
                , drawCollection :: Maybe String <?> "([PieChart] | PieRing | PieNone | CollectionGraph MAXWEIGHT THRESHOLD [NODE]) How to draw item leaves in the dendrogram. PieRing draws a pie chart ring around the items. PieChart only draws a pie chart instead of items. PieNone only draws items, no pie rings or charts. (CollectionGraph MAXWEIGHT THRESHOLD [NODE]) draws the nodes and edges within leaves that are descendents of NODE (empty list [] indicates draw all leaf networks) based on the input matrix, normalizes edges based on the MAXWEIGHT, and removes edges for display less than THRESHOLD (after normalization, so for CollectionGraph 2 0.5 [26], draw the leaf graphs for all leaves under node 26, then a edge of 0.7 would be removed because (0.7 / 2) < 0.5). For CollectionGraph with no colors, use --draw-leaf \"DrawItem DrawLabel\" and all nodes will be black. If you don't specify this option, DrawText from --draw-leaf overrides this argument and only the number of cells will be plotted."
-               , drawMark :: Maybe String <?> "([MarkNone] | MarkModularity) How to draw annotations around each inner node in the tree. MarkNone draws nothing and MarkModularity draws a black circle representing the modularity at that node, darker black means higher modularity for that next split."
+               , drawMark :: Maybe String <?> "([MarkNone] | MarkModularity | MarkSignificance ) How to draw annotations around each inner node in the tree. MarkNone draws nothing and MarkModularity draws a black circle representing the modularity at that node, darker black means higher modularity for that next split. MarkSignificance is for significance, i.e. p-value, darker means higher value."
                , drawNodeNumber :: Bool <?> "Draw the node numbers on top of each node in the graph."
                , drawMaxNodeSize :: Maybe Double <?> "([72] | DOUBLE) The max node size when drawing the graph. 36 is the theoretical default, but here 72 makes for thicker branches."
                , drawMaxLeafNodeSize :: Maybe Double <?> "([--draw-max-node-size] | DOUBLE) The max leaf node size when drawing the graph. Defaults to the value of --draw-max-node-size."
@@ -112,9 +119,12 @@ data Options
                , drawLegendAllLabels :: Bool <?> "Whether to show all the labels in the label file instead of only showing labels within the current tree. The program generates colors from all labels in the label file first in order to keep consistent colors. By default, this value is false, meaning that only the labels present in the tree are shown (even though the colors are the same). The subset process occurs after --draw-colors, so when using that argument make sure to account for all labels."
                , drawPalette :: Maybe String <?> "([Set1] | Hsv | Ryb) Palette to use for legend colors. With high saturation in --draw-scale-saturation, consider using Hsv to better differentiate colors."
                , drawColors :: Maybe String <?> "([Nothing] | COLORS) Custom colors for the labels or continuous features. Will repeat if more labels than provided colors. For continuous feature plots, uses first two colors [high, low], defaults to [red, gray]. For instance: --draw-colors \"[\\\"#e41a1c\\\", \\\"#377eb8\\\"]\""
+               , drawDiscretize :: Maybe String <?> "([Nothing] | COLORS | INT) Discretize colors by finding the nearest color for each item and node. For instance, --draw-discretize \"[\\\"#e41a1c\\\", \\\"#377eb8\\\"]\" will change all node and item colors to one of those two colors, based on Euclidean distance. If using \"--draw-discretize INT\", will instead take the default map and segment (or interpolate) it into INT colors, rather than a more continuous color scheme. May have unintended results when used with --draw-scale-saturation."
                , drawScaleSaturation :: Maybe Double <?> "([Nothing] | DOUBLE) Multiply the saturation value all nodes by this number in the HSV model. Useful for seeing more visibly the continuous colors by making the colors deeper against a gray scale."
-               , pca :: Maybe Double <?> "([Nothing] | DOUBLE) The percent variance to retain for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information."
+               , drawFont :: Maybe String <?> "([Arial] | FONT) Specify the font to use for the labels when plotting."
+               , pca :: Maybe Int <?> "([Nothing] | INT) Not recommended, as it makes cosine similarity less meaningful (therefore less accurate -- instead, consider making your own similarity matrix and using cluster-tree, our sister algorithm, to cluster the matrix and plot with birch-beer). The number of dimensions to keep for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information. Should use with --shift-positive to ensure no negative values."
                , noFilter :: Bool <?> "Whether to bypass filtering genes and cells by low counts."
+               , shiftPositive :: Bool <?> "Shift features to positive values. Positive values are shifted to allow modularity to work correctly."
                , filterThresholds :: Maybe String <?> "([(250, 1)] | (DOUBLE, DOUBLE)) The minimum filter thresholds for (MINCELL, MINFEATURE) when filtering cells and features by low read counts. See also --no-filter."
                , prior :: Maybe String <?> "([Nothing] | STRING) The input folder containing the output from a previous run. If specified, skips clustering by using the previous clustering files."
                , order :: Maybe Double <?> "([1] | DOUBLE) The order of diversity."
@@ -126,8 +136,9 @@ data Options
                   , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
                   , delimiter :: Maybe Char <?> "([,] | CHAR) The delimiter for the csv file if using a normal csv rather than cellranger output and for --labels-file."
                   , featureColumn :: Maybe Int <?> "([1] | COLUMN) The column (1-indexed) in the features.tsv.gz file to use for feature names. If using matrix market format, cellranger stores multiple columns in the features file, usually the first column for the Ensembl identifier and the second column for the gene symbol. If the Ensembl identifier is not quickly accessible, use --feature-column 2 for the second column, which is usually more ubiquitous. Useful for overlaying gene expression so you can say --draw-leaf \"DrawItem (DrawContinuous \\\"CD4\\\")\") instead of --draw-leaf \"DrawItem (DrawContinuous \\\"ENSG00000010610\\\")\"). Does not affect CSV format (the column names will be the feature names)."
-                  , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
-                  , pca :: Maybe Double <?> "([Nothing] | DOUBLE) The percent variance to retain for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information."
+                  , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | LogCPMNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). LogCPMNorm normalizes by log2(CPM + 1). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
+                  , pca :: Maybe Int <?> "([Nothing] | INT) Not recommended, as it makes cosine similarity less meaningful (therefore less accurate -- instead, consider making your own similarity matrix and using cluster-tree, our sister algorithm, to cluster the matrix and plot with birch-beer). The number of dimensions to keep for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information. Should use with --shift-positive to ensure no negative values."
+                  , shiftPositive :: Bool <?> "Shift features to positive values. Positive values are shifted to allow modularity to work correctly."
                   , noFilter :: Bool <?> "Whether to bypass filtering genes and cells by low counts."
                   , filterThresholds :: Maybe String <?> "([(250, 1)] | (DOUBLE, DOUBLE)) The minimum filter thresholds for (MINCELL, MINFEATURE) when filtering cells and features by low read counts. See also --no-filter."
                   , prior :: Maybe String <?> "([Nothing] | STRING) The input folder containing the output from a previous run. If specified, skips clustering by using the previous clustering files."}
@@ -135,16 +146,18 @@ data Options
                    , cellWhitelistFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the cells to include. No header, line separated list of barcodes."
                    , labelsFile :: Maybe String <?> "([Nothing] | FILE) The input file containing the label for each cell barcode, with \"item,label\" header."
                    , featureColumn :: Maybe Int <?> "([1] | COLUMN) The column (1-indexed) in the features.tsv.gz file to use for feature names. If using matrix market format, cellranger stores multiple columns in the features file, usually the first column for the Ensembl identifier and the second column for the gene symbol. If the Ensembl identifier is not quickly accessible, use --feature-column 2 for the second column, which is usually more ubiquitous. Useful for overlaying gene expression so you can say --draw-leaf \"DrawItem (DrawContinuous \\\"CD4\\\")\") instead of --draw-leaf \"DrawItem (DrawContinuous \\\"ENSG00000010610\\\")\"). Does not affect CSV format (the column names will be the feature names)."
-                   , pca :: Maybe Double <?> "([Nothing] | DOUBLE) The percent variance to retain for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information."
+                   , pca :: Maybe Int <?> "([Nothing] | INT) Not recommended, as it makes cosine similarity less meaningful (therefore less accurate -- instead, consider making your own similarity matrix and using cluster-tree, our sister algorithm, to cluster the matrix and plot with birch-beer). The number of dimensions to keep for PCA dimensionality reduction before clustering. Default is no PCA at all in order to keep all information. Should use with --shift-positive to ensure no negative values."
                    , noFilter :: Bool <?> "Whether to bypass filtering genes and cells by low counts."
+                   , shiftPositive :: Bool <?> "Shift features to positive values. Positive values are shifted to allow modularity to work correctly."
                    , filterThresholds :: Maybe String <?> "([(250, 1)] | (DOUBLE, DOUBLE)) The minimum filter thresholds for (MINCELL, MINFEATURE) when filtering cells and features by low read counts. See also --no-filter."
                    , delimiter :: Maybe Char <?> "([,] | CHAR) The delimiter for the csv file if using a normal csv rather than cellranger output and for --labels-file."
-                   , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
+                   , normalization :: Maybe String <?> "([TfIdfNorm] | UQNorm | MedNorm | TotalMedNorm | BothNorm | LogCPMNorm | NoneNorm) Type of normalization before clustering. TfIdfNorm normalizes based on the prevalence of each feature. UQNorm normalizes each observation by the upper quartile non-zero counts of that observation. MedNorm normalizes each observation by the median non-zero counts of that observation. TotalMedNorm normalized first each observation by total count then by median of non-zero counts across features. BothNorm uses both normalizations (first TotalMedNorm for all analysis then additionally TfIdfNorm during clustering). LogCPMNorm normalizes by log2(CPM + 1). NoneNorm does not normalize. Default is TfIdfNorm for clustering and NoneNorm for differential (which instead uses the recommended edgeR single cell preprocessing including normalization and filtering, any normalization provided here will result in edgeR preprocessing on top). Cannot use TfIdfNorm for any other process as NoneNorm will become the default."
                    , prior :: Maybe String <?> "([Nothing] | STRING) The input folder containing the output from a previous run. If specified, skips clustering by using the previous clustering files."
                    , nodes :: String <?> "([NODE], [NODE]) Find the differential expression between cells belonging downstream of a list of nodes versus another list of nodes. Directionality is \"([1], [2])\" -> 2 / 1. \"([], [])\" switches the process to instead find the log2 average division between all nodes with all other cells (node / other cells) using the Kruskal-Wallis Test (--genes does not work for this, --labels works, and UQNorm for the normalization is recommended. Only returns nodes where the comparison had both groups containing at least five cells.)."
                    , labels :: Maybe String <?> "([Nothing] | ([LABEL], [LABEL])) Use --labels-file to restrict the differential analysis to cells with these labels. Same format as --nodes, so the first list in --nodes and --labels gets the cells within that list of nodes with this list of labels. The same for the second list. For instance, --nodes \"([1], [2])\" --labels \"([\\\"A\\\"], [\\\"B\\\"])\" will compare cells from node 1 of label \"A\" only with cells from node 2 of label \"B\" only. To use all cells for that set of nodes, use an empty list, i.e. --labels \"([], [\\\"A\\\"])\". When comparing all nodes with all other cells, remember that the notation would be ([Other Cells], [Node]), so to compare cells of label X in Node with cells of label Y in Other Cells, use --labels \"([\\\"Y\\\", \\\"X\\\"])\". Requires both --labels and --labels-file, otherwise will include all labels."
                    , topN :: Maybe Int <?> "([100] | INT ) The top INT differentially expressed genes."
                    , genes :: [T.Text] <?> "([Nothing] | GENE) List of genes to plot for all cells within selected nodes. Invoked by --genes CD4 --genes CD8 etc. When this argument is supplied, only the plot is outputted and edgeR differential expression is ignored. Outputs to --output."
+                   , aggregate :: Bool <?> "([False] | True) Whether to plot the aggregate (mean here) of features for each cell from \"--genes\" instead of plotting different distributions for each feature."
                    , plotOutput :: Maybe String <?> "([out.pdf] | STRING) The file containing the output plot."}
     | Diversity { priors :: [String] <?> "(PATH) Either input folders containing the output from a run of too-many-cells or a csv files containing the clusters for each cell in the format \"cell,cluster\". Advanced features not available in the latter case. If --labels-file is specified, those labels designate entity type, otherwise the assigned cluster is the entity type."
                 , delimiter :: Maybe Char <?> "([,] | CHAR) The delimiter for the csv file if using a normal csv rather than cellranger output and for --labels-file."
@@ -166,6 +179,7 @@ data Options
 modifiers :: Modifiers
 modifiers = lispCaseModifiers { shortNameModifier = short }
   where
+    short "aggregate"            = Nothing
     short "customCut"            = Nothing
     short "clumpinessMethod"     = Just 'u'
     short "clusterNormalization" = Just 'C'
@@ -173,6 +187,8 @@ modifiers = lispCaseModifiers { shortNameModifier = short }
     short "drawCollection"       = Just 'E'
     short "drawColors"           = Just 'R'
     short "drawDendrogram"       = Just 'D'
+    short "drawDiscretize"       = Nothing
+    short "drawFont"             = Nothing
     short "drawLeaf"             = Just 'L'
     short "drawLegendAllLabels"  = Just 'J'
     short "drawLegendSep"        = Just 'Q'
@@ -188,19 +204,25 @@ modifiers = lispCaseModifiers { shortNameModifier = short }
     short "filterThresholds"     = Just 'H'
     short "labels"               = Nothing
     short "matrixOutput"         = Nothing
+    short "matrixOutputTranspose" = Nothing
     short "maxDistance"          = Just 'T'
     short "maxProportion"        = Just 'X'
     short "maxStep"              = Just 'S'
     short "minDistance"          = Nothing
+    short "minDistanceSearch"    = Nothing
+    short "minModularity"        = Nothing
     short "minSize"              = Just 'M'
     short "noFilter"             = Just 'F'
     short "normalization"        = Just 'z'
     short "numEigen"             = Just 'G'
+    short "numRuns"              = Nothing
     short "order"                = Just 'O'
     short "pca"                  = Just 'a'
     short "plotOutput"           = Nothing
     short "priors"               = Just 'P'
     short "projectionFile"       = Just 'j'
+    short "rootCut"              = Nothing
+    short "shiftPositive"        = Nothing
     short x                      = firstLetter x
 
 instance ParseRecord Options where
@@ -284,13 +306,21 @@ loadAllSSM opts = runMaybeT $ do
         cellWhitelistFile' =
             fmap CellWhitelistFile . unHelpful . cellWhitelistFile $ opts
         normalization'     = getNormalization opts
-        pca'               = fmap PCAVar . unHelpful . pca $ opts
+        pca'               = fmap PCADim . unHelpful . pca $ opts
         noFilterFlag'      = NoFilterFlag . unHelpful . noFilter $ opts
+        shiftPositiveFlag' =
+          ShiftPositiveFlag . unHelpful . shiftPositive $ opts
         filterThresholds'  = FilterThresholds
                            . maybe (250, 1) read
                            . unHelpful
                            . filterThresholds
                            $ opts
+
+    liftIO $ when (isJust pca' && (elem normalization' [TfIdfNorm, BothNorm])) $
+      hPutStrLn stderr "\nWarning: PCA (creating negative numbers) with tf-idf\
+                       \ normalization may lead to NaNs or 0s before spectral\
+                       \ clustering (leading to svdlibc to hang or dense SVD\
+                       \ to error out)! Continuing..."
 
     mats <- MaybeT
           $ if null matrixPaths'
@@ -302,9 +332,8 @@ loadAllSSM opts = runMaybeT $ do
         whiteListFilter (Just wl) = filterWhitelistSparseMat wl
         unFilteredSc = mconcat mats
         sc           =
-            (\ x -> if unNoFilterFlag noFilterFlag'
-                        then x
-                        else filterNumSparseMat filterThresholds' x
+            ( bool (filterNumSparseMat filterThresholds') id
+            $ unNoFilterFlag noFilterFlag'
             )
                 . whiteListFilter cellWhitelist
                 $ unFilteredSc
@@ -313,14 +342,19 @@ loadAllSSM opts = runMaybeT $ do
         normMat MedNorm      = medScaleSparseMat
         normMat TotalMedNorm = scaleSparseMat
         normMat BothNorm     = scaleSparseMat
+        normMat LogCPMNorm   = logCPMSparseMat
         normMat NoneNorm     = id
-        processMat  = (\m -> maybe m (flip pcaDenseMat m) pca')
-                    . normMat normalization'
-                    . _matrix
-        processedSc = sc { _matrix = processMat sc }
+        processMat  = normMat normalization' . _matrix
+        processedSc = ( bool id shiftPositiveSc
+                      $ unShiftPositiveFlag shiftPositiveFlag'
+                      )
+                    . (\m -> maybe m (flip pcaDenseSc m) pca')
+                    $ sc { _matrix = processMat sc }
 
     -- Check for empty matrix.
     when (V.null . getRowNames $ processedSc) $ error "Matrix is empty. Check --filter-thresholds, --normalization, or the input matrix for over filtering or incorrect input format."
+
+    liftIO . mapM_ (hPutStrLn stderr) . matrixValidity $ processedSc
 
     return processedSc
 
@@ -342,13 +376,17 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
         dense'            = DenseFlag . unHelpful . dense $ opts
         normalization'    = getNormalization opts
         numEigen'         = fmap NumEigen . unHelpful . numEigen $ opts
+        numRuns'          = fmap NumRuns . unHelpful . numRuns $ opts
         minSize'          = fmap MinClusterSize . unHelpful . minSize $ opts
         maxStep'          = fmap MaxStep . unHelpful . maxStep $ opts
         maxProportion'    =
             fmap MaxProportion . unHelpful . maxProportion $ opts
-        minDistance'      = fmap MinDistance . unHelpful . minDistance $ opts
+        minDistance'       = fmap MinDistance . unHelpful . minDistance $ opts
+        minModularity'     = fmap Q . unHelpful . minModularity $ opts
+        minDistanceSearch' = fmap MinDistanceSearch . unHelpful . minDistanceSearch $ opts
         smartCutoff'      = fmap SmartCutoff . unHelpful . smartCutoff $ opts
         customCut'        = CustomCut . Set.fromList . unHelpful . customCut $ opts
+        rootCut'          = fmap RootCut . unHelpful . rootCut $ opts
         dendrogramOutput' = DendrogramFile
                           . fromMaybe "dendrogram.svg"
                           . unHelpful
@@ -358,10 +396,14 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
                           . unHelpful
                           . matrixOutput
                           $ opts
+        matrixOutputTranspose' = fmap (getMatrixOutputType . (unOutputDirectory output' FP.</>))
+                               . unHelpful
+                               . matrixOutputTranspose
+                               $ opts
         drawLeaf'         =
             maybe
               (maybe DrawText (const (DrawItem DrawLabel)) labelsFile')
-              (readOrErr "Cannot read draw-leaf.")
+              (readOrErr "Cannot read draw-leaf. If using DrawContinuous, remember to put features in a list: DrawItem (DrawContinuous [\\\"FEATURE\\\"])")
                 . unHelpful
                 . drawLeaf
                 $ opts
@@ -404,8 +446,24 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
                           . unHelpful
                           . drawColors
                           $ opts
+        drawDiscretize' = (=<<) (\x -> either error Just
+                                . either
+                                    (\ err -> either
+                                                (\y -> Left $ finalError err y)
+                                                (Right . SegmentColorMap)
+                                              (readEither x :: Either String Int)
+                                    )
+                                    (Right . CustomColorMap . fmap sRGB24read)
+                                $ (readEither x :: Either String [String])
+                                )
+                        . unHelpful
+                        . drawDiscretize
+                        $ opts
+          where
+            finalError err x = "Error in draw-discretize: " <> err <> " " <> x
         drawScaleSaturation' =
             fmap DrawScaleSaturation . unHelpful . drawScaleSaturation $ opts
+        drawFont' = fmap DrawFont . unHelpful . drawFont $ opts
         order'            = Order . fromMaybe 1 . unHelpful . order $ opts
         clumpinessMethod' =
             maybe Clump.Majority (readOrErr "Cannot read clumpiness-method.")
@@ -470,8 +528,8 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
     -- Load previous results or calculate results if first run.
     originalClusterResults <- case prior' of
         Nothing -> do
-            let (fullCr, _) =
-                  hSpecClust dense' eigenGroup' normalization' numEigen'
+            (fullCr, _) <-
+                  hSpecClust dense' eigenGroup' normalization' numEigen' minModularity' numRuns'
                     . extractSc
                     $ processedSc
 
@@ -515,8 +573,10 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
                     , _birchMaxStep = maxStep'
                     , _birchMaxProportion = maxProportion'
                     , _birchMinDistance = minDistance'
+                    , _birchMinDistanceSearch   = minDistanceSearch'
                     , _birchSmartCutoff = smartCutoff'
                     , _birchCustomCut   = customCut'
+                    , _birchRootCut     = rootCut'
                     , _birchOrder = Just order'
                     , _birchDrawLeaf = drawLeaf'
                     , _birchDrawCollection = drawCollection'
@@ -529,7 +589,9 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
                     , _birchDrawLegendAllLabels = drawLegendAllLabels'
                     , _birchDrawPalette = drawPalette'
                     , _birchDrawColors = drawColors'
+                    , _birchDrawDiscretize      = drawDiscretize'
                     , _birchDrawScaleSaturation = drawScaleSaturation'
+                    , _birchDrawFont            = drawFont'
                     , _birchTree = _clusterDend originalClusterResults
                     , _birchMat = birchMat
                     , _birchSimMat = birchSimMat
@@ -578,9 +640,11 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
         (unOutputDirectory output' FP.</> "cluster_info.csv")
         . printClusterInfo
         $ gr'
-    case matrixOutput' of
-        Nothing  -> return ()
-        (Just x) -> writeMatrixLike x . extractSc $ processedSc
+    -- Write matrix
+    mapM_ (\x -> writeMatrixLike (MatrixTranspose False) x . extractSc $ processedSc) matrixOutput'
+    -- Write matrix transpose
+    mapM_ (\x -> writeMatrixLike (MatrixTranspose True) x . extractSc $ processedSc) matrixOutputTranspose'
+    -- Write node info
     B.writeFile
         (unOutputDirectory output' FP.</> "node_info.csv")
         . printNodeInfo labelMap
@@ -588,6 +652,7 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
     case labelMap of
         Nothing   -> return ()
         (Just lm) ->
+            -- Write cluster diversity
             case clusterDiversity order' lm clusterResults of
                 (Left err) -> hPutStrLn stderr
                             $ err
@@ -655,6 +720,14 @@ makeTreeMain opts = H.withEmbeddedR defaultConfig $ do
                             $ plotClumpinessHeatmapR
                                 (unOutputDirectory output' FP.</> "clumpiness.pdf")
                                 clumpList
+
+        -- View cutting location for modularity.
+        case minDistanceSearch' of
+          Nothing -> return ()
+          (Just _) -> plotRankedModularityR
+                        (unOutputDirectory output' FP.</> "modularity_rank.pdf")
+                    . L.view clusterDend
+                    $ clusterResults
 
         -- Increment  progress bar.
         H.io $ Progress.autoProgressBar
@@ -771,6 +844,7 @@ differentialMain opts = do
                   $ opts
         topN'     = TopN . fromMaybe 100 . unHelpful . topN $ opts
         genes'    = fmap Gene . unHelpful . genes $ opts
+        aggregate' = Aggregate . unHelpful . aggregate $ opts
         labels'   = fmap ( DiffLabels
                          . L.over L.both ( (\x -> bool (Just x) Nothing . Set.null $ x)
                                          . Set.fromList
@@ -822,29 +896,36 @@ differentialMain opts = do
 
               H.io . B.putStrLn . getDEString $ res
         _ -> do
+          let outputCsvR = FP.replaceExtension plotOutputR ".csv"
+
           diffPlot <- getSingleDiff
                        False
+                       aggregate'
                        labelMap
                        (extractSc processedSc)
                        combined1
                        combined2
                        genes'
                        gr
-          [r| suppressMessages(ggsave(diffPlot_hs, file = plotOutputR_hs)) |]
+          [r| suppressMessages(write.csv(diffPlot_hs[[2]], file = outputCsvR_hs, row.names = FALSE, quote = FALSE)) |]
+          [r| suppressMessages(ggsave(diffPlot_hs[[1]], file = plotOutputR_hs)) |]
 
           let normOutputR = FP.replaceBaseName
                               plotOutputR
                              (FP.takeBaseName plotOutputR <> "_scaled")
+              normOutputCsvR = FP.replaceExtension normOutputR ".csv"
 
           diffNormPlot <- getSingleDiff
                             True
+                            aggregate'
                             labelMap
                             (extractSc processedSc)
                             combined1
                             combined2
                             genes'
                             gr
-          [r| suppressMessages(ggsave(diffNormPlot_hs, file = normOutputR_hs)) |]
+          [r| suppressMessages(write.csv(diffNormPlot_hs[[2]], file = normOutputCsvR_hs, row.names = FALSE, quote = FALSE)) |]
+          [r| suppressMessages(ggsave(diffNormPlot_hs[[1]], file = normOutputR_hs)) |]
 
           return ()
 
